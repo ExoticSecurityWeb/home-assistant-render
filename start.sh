@@ -6,12 +6,12 @@ mkdir -p /config /backup
 
 echo "=== Home Assistant B2 ==="
 
-# Restore only when this is a fresh installation.
+# Restore the latest backup.
 python3 /backup_b2.py restore || true
 
-# Keep the Render Secret File available.
-# Never overwrite a restored configuration.
-if [ ! -f /config/configuration.yaml ] && [ -f /etc/secrets/configuration.yaml ]; then
+# Always use the Render configuration.yaml.
+# This contains the HTTP/port configuration required by Render.
+if [ -f /etc/secrets/configuration.yaml ]; then
     cp /etc/secrets/configuration.yaml /config/configuration.yaml
 fi
 

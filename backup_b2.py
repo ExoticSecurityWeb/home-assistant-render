@@ -21,15 +21,8 @@ B2_BUCKET = os.environ.get("B2_BUCKET", "")
 
 PREFIX = "home-assistant/"
 
-# Nombre maximum de backups conservés.
 KEEP_BACKUPS = 7
-
-# Anti-spam :
-# après un backup, on attend au minimum cette durée
-# avant d'en refaire un.
 MIN_BACKUP_INTERVAL = 60
-
-# Vérification des modifications.
 CHECK_INTERVAL = 5
 
 
@@ -62,10 +55,6 @@ def get_client():
 
 
 def configured():
-    """
-    Détermine si Home Assistant possède déjà une configuration réelle.
-    """
-
     return os.path.exists(
         os.path.join(CONFIG_DIR, ".storage", "core.config_entries")
     )
@@ -92,10 +81,77 @@ def latest_backup(s3):
     )
 
 
+def should_restore(path):
+    """
+    Détermine si un fichier du backup peut être restauré.
+    """
+
+    normalized = path.replace("\\", "/").lstrip("./")
+
+    ignored_files = {
+        "home-assistant.log",
+        "home-assistant.log.1",
+        "home-assistant.log.fault",
+        "home-assistant_v2.db",
+        "home-assistant_v2.db-shm",
+        "home-assistant_v2.db-wal",
+        ".HA_VERSION",
+    }
+
+    filename = os.path.basename(normalized)
+
+    if filename in ignored_files:
+        return False
+
+    ignored_parts = {
+        "__pycache__",
+        ".cache",
+        "tts",
+    }
+
+    parts = normalized.split("/")
+
+    if any(part in ignored_parts for part in parts):
+        return False
+
+    return True
+
+
+def safe_extract(archive, destination):
+    """
+    Extrait uniquement les fichiers autorisés du backup.
+    """
+
+    for member in archive.getmembers():
+
+        if not should_restore(member.name):
+            print(
+                f"B2: fichier runtime ignoré: {member.name}",
+                flush=True,
+            )
+            continue
+
+        target = os.path.abspath(
+            os.path.join(destination, member.name)
+        )
+
+        base = os.path.abspath(destination)
+
+        if not (
+            target == base
+            or target.startswith(base + os.sep)
+        ):
+            raise RuntimeError(
+                f"Chemin invalide dans le backup: {member.name}"
+            )
+
+        archive.extract(member, destination)
+
+
 def restore():
     """
-    Restaure automatiquement le dernier backup uniquement
-    si Home Assistant est encore vide.
+    Restaure le dernier backup uniquement si
+    Home Assistant n'est pas encore configuré.
     """
 
     if configured():
@@ -105,7 +161,10 @@ def restore():
         )
         return
 
-    print("B2: recherche d'un backup...", flush=True)
+    print(
+        "B2: recherche d'un backup...",
+        flush=True,
+    )
 
     s3 = get_client()
 
@@ -135,6 +194,7 @@ def restore():
         local_file = temp.name
 
     try:
+
         s3.download_file(
             B2_BUCKET,
             key,
@@ -142,7 +202,7 @@ def restore():
         )
 
         print(
-            "B2: extraction du backup...",
+            "B2: extraction sécurisée du backup...",
             flush=True,
         )
 
@@ -151,7 +211,10 @@ def restore():
             "r:gz",
         ) as archive:
 
-            archive.extractall(CONFIG_DIR)
+            safe_extract(
+                archive,
+                CONFIG_DIR,
+            )
 
         print(
             "B2: restauration terminée.",
@@ -167,15 +230,13 @@ def restore():
 
 
 def config_signature():
-    """
-    Produit une signature légère des fichiers importants.
-    Les fichiers extrêmement volatils sont ignorés.
-    """
-
     ignored = {
         "home-assistant.log",
         "home-assistant.log.1",
         "home-assistant.log.fault",
+        "home-assistant_v2.db",
+        "home-assistant_v2.db-shm",
+        "home-assistant_v2.db-wal",
         ".HA_VERSION",
     }
 
@@ -183,7 +244,6 @@ def config_signature():
 
     for root, dirs, files in os.walk(CONFIG_DIR):
 
-        # On ignore les caches temporaires.
         dirs[:] = [
             d
             for d in dirs
@@ -205,6 +265,7 @@ def config_signature():
             )
 
             try:
+
                 stat = os.stat(path)
 
                 relative = os.path.relpath(
@@ -227,9 +288,6 @@ def config_signature():
 
 
 def create_backup(s3):
-    """
-    Crée un backup complet de /config et l'envoie à B2.
-    """
 
     timestamp = datetime.now(
         timezone.utc
@@ -258,9 +316,17 @@ def create_backup(s3):
         "w:gz",
     ) as archive:
 
+        def filter_member(member):
+
+            if not should_restore(member.name):
+                return None
+
+            return member
+
         archive.add(
             CONFIG_DIR,
             arcname=".",
+            filter=filter_member,
         )
 
     print(
@@ -343,8 +409,6 @@ def watch():
 
             now = time.time()
 
-            # Protection contre plusieurs modifications
-            # simultanées.
             if now - last_backup_time < MIN_BACKUP_INTERVAL:
 
                 print(

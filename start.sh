@@ -6,10 +6,11 @@ mkdir -p /config /backup
 
 echo "=== Home Assistant B2 ==="
 
-# Restauration B2 désactivée temporairement pour tester le démarrage HTTP.
-echo "B2: restauration désactivée pour ce test."
+# Restaurer la configuration depuis B2
+python3 /backup_b2.py restore || true
 
-# Configuration Render
+# Toujours remettre la configuration Render
+# afin de conserver le port 10000.
 if [ -f /etc/secrets/configuration.yaml ]; then
     cp /etc/secrets/configuration.yaml /config/configuration.yaml
 fi
@@ -18,7 +19,7 @@ echo "=== Configuration HTTP ==="
 grep -A6 '^http:' /config/configuration.yaml || true
 echo "=========================="
 
-# Surveillance et sauvegardes B2
+# Lancer la surveillance des backups
 python3 /backup_b2.py watch &
 
 echo "Starting Home Assistant..."
